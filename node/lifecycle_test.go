@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"github.com/kok-stack/cluster-kubelet/errdefs"
 	"github.com/kok-stack/cluster-kubelet/log"
 	logruslogger "github.com/kok-stack/cluster-kubelet/log/logrus"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"gotest.tools/assert"
 	is "gotest.tools/assert/cmp"
 	corev1 "k8s.io/api/core/v1"
@@ -626,17 +626,6 @@ func randomizeUID(pod *corev1.Pod) {
 func randomizeName(pod *corev1.Pod) {
 	name := fmt.Sprintf("pod-%s", uuid.NewUUID())
 	pod.Name = name
-}
-
-func forRealAPIServer(pod *corev1.Pod) {
-	pod.ResourceVersion = ""
-	pod.ObjectMeta.UID = ""
-}
-
-func nameBasedOnTest(t *testing.T) podModifier {
-	return func(pod *corev1.Pod) {
-		pod.Name = kubernetesNameForTest(t)
-	}
 }
 
 func newPod(podmodifiers ...podModifier) *corev1.Pod {

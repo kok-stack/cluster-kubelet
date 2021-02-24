@@ -17,15 +17,14 @@ package node
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	pkgerrors "github.com/pkg/errors"
 	"github.com/kok-stack/cluster-kubelet/internal/podutils"
 	"github.com/kok-stack/cluster-kubelet/internal/queue"
 	"github.com/kok-stack/cluster-kubelet/log"
 	"github.com/kok-stack/cluster-kubelet/trace"
+	pkgerrors "github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -215,7 +214,14 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 	}
 	kPod := obj.(*knownPod)
 	kPod.Lock()
+
 	podFromProvider := kPod.lastPodStatusReceivedFromProvider.DeepCopy()
+	if cmp.Equal(podFromKubernetes.Status, podFromProvider.Status) && podFromProvider.DeletionTimestamp == nil {
+		kPod.lastPodStatusUpdateSkipped = true
+		kPod.Unlock()
+		return nil
+	}
+	kPod.lastPodStatusUpdateSkipped = false
 	kPod.Unlock()
 	// Pod deleted by provider due some reasons. e.g. a K8s provider, pod created by deployment would be evicted when node is not ready.
 	// If we do not delete pod in K8s, deployment would not create a new one.
@@ -319,14 +325,12 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 	kpod := obj.(*knownPod)
 	kpod.Lock()
 	if cmp.Equal(kpod.lastPodStatusReceivedFromProvider, pod) {
-		kpod.lastPodStatusUpdateSkipped = true
 		kpod.Unlock()
 		return
 	}
-	kpod.lastPodStatusUpdateSkipped = false
 	kpod.lastPodStatusReceivedFromProvider = pod
 	kpod.Unlock()
-	pc.syncPodStatusFromProvider.Enqueue(ctx, key)
+	pc.syncPodStatusFromProvider.Enqueue(key)
 }
 
 func (pc *PodController) syncPodStatusFromProviderHandler(ctx context.Context, key string) (retErr error) {
@@ -363,8 +367,7 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 	ctx, span := trace.StartSpan(ctx, "deletePodsFromKubernetesHandler")
 	defer span.End()
 
-	uid, metaKey := getUIDAndMetaNamespaceKey(key)
-	namespace, name, err := cache.SplitMetaNamespaceKey(metaKey)
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	ctx = span.WithFields(ctx, log.Fields{
 		"namespace": namespace,
 		"name":      name,
@@ -394,25 +397,15 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 		span.SetStatus(err)
 		return err
 	}
-	if string(k8sPod.UID) != uid {
-		log.G(ctx).WithField("k8sPodUID", k8sPod.UID).WithField("uid", uid).Warn("Not deleting pod because remote pod has different UID")
-		return nil
-	}
+
 	if running(&k8sPod.Status) {
 		log.G(ctx).Error("Force deleting pod in running state")
 	}
 
 	// We don't check with the provider before doing this delete. At this point, even if an outstanding pod status update
 	// was in progress,
-	deleteOptions := metav1.NewDeleteOptions(0)
-	deleteOptions.Preconditions = metav1.NewUIDPreconditions(uid)
-	err = pc.client.Pods(namespace).Delete(ctx, name, *deleteOptions)
+	err = pc.client.Pods(namespace).Delete(ctx, name, *metav1.NewDeleteOptions(0))
 	if errors.IsNotFound(err) {
-		log.G(ctx).Warnf("Not deleting pod because %v", err)
-		return nil
-	}
-	if errors.IsConflict(err) {
-		log.G(ctx).Warnf("There was a conflict, maybe trying to delete a Pod that has been recreated: %v", err)
 		return nil
 	}
 	if err != nil {
@@ -420,11 +413,4 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 		return err
 	}
 	return nil
-}
-
-func getUIDAndMetaNamespaceKey(key string) (string, string) {
-	idx := strings.LastIndex(key, "/")
-	uid := key[idx+1:]
-	metaKey := key[:idx]
-	return uid, metaKey
 }

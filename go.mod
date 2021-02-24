@@ -18,6 +18,7 @@ require (
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.5
 	go.opencensus.io v0.21.0
+	go.uber.org/goleak v1.1.10
 	golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
 	golang.org/x/sys v0.0.0-20200323222414-85ca7c5b95cd
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
@@ -29,6 +30,7 @@ require (
 	k8s.io/klog v1.0.0
 	k8s.io/klog/v2 v2.0.0
 	k8s.io/kubernetes v1.18.4
+	k8s.io/metrics v0.18.4
 	k8s.io/utils v0.0.0-20200603063816-c1c6865ac451
 	sigs.k8s.io/controller-runtime v0.6.3
 )
