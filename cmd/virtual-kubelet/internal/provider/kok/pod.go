@@ -135,7 +135,10 @@ func (p *PodEventHandler) OnUpdate(oldObj, newObj interface{}) {
 func (p *PodEventHandler) OnDelete(obj interface{}) {
 	downPod := obj.(*v1.Pod)
 	fmt.Println("PodEventHandler.OnAdd============================================")
-	if err := p.p.config.ResourceManager.DeletePod(p.ctx, downPod.GetNamespace(), downPod.GetName()); err != nil {
+	err := p.p.config.ResourceManager.DeletePod(p.ctx, downPod.GetNamespace(), downPod.GetName())
+	if (err != nil && errors2.IsNotFound(err)) || err == nil {
+		return
+	} else {
 		println(err.Error())
 	}
 }
@@ -213,7 +216,7 @@ const defaultTokenNamePrefix = "default-token"
 */
 func trimPod(pod *v1.Pod) {
 	addDownPodVirtualKubeletLabels(pod)
-	trimObjectMeta(pod)
+	trimObjectMeta(&pod.ObjectMeta)
 	pod.Spec.NodeName = ""
 
 	vols := []v1.Volume{}
@@ -229,11 +232,11 @@ func trimPod(pod *v1.Pod) {
 	pod.Status = v1.PodStatus{}
 }
 
-func trimObjectMeta(pod *v1.Pod) {
-	pod.SetUID("")
-	pod.SetResourceVersion("")
-	pod.SetSelfLink("")
-	pod.SetOwnerReferences(nil)
+func trimObjectMeta(meta *v12.ObjectMeta) {
+	meta.SetUID("")
+	meta.SetResourceVersion("")
+	meta.SetSelfLink("")
+	meta.SetOwnerReferences(nil)
 }
 
 func trimContainers(containers []v1.Container) []v1.Container {

@@ -33,16 +33,18 @@ type ResourceManager struct {
 	configMapLister corev1listers.ConfigMapLister
 	serviceLister   corev1listers.ServiceLister
 	client          *kubernetes.Clientset
+	namespaceLister corev1listers.NamespaceLister
 }
 
 // NewResourceManager returns a ResourceManager with the internal maps initialized.
-func NewResourceManager(client *kubernetes.Clientset, podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister) (*ResourceManager, error) {
+func NewResourceManager(client *kubernetes.Clientset, podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister, namespaceLister corev1listers.NamespaceLister) (*ResourceManager, error) {
 	rm := ResourceManager{
 		client:          client,
 		podLister:       podLister,
 		secretLister:    secretLister,
 		configMapLister: configMapLister,
 		serviceLister:   serviceLister,
+		namespaceLister: namespaceLister,
 	}
 	return &rm, nil
 }
@@ -61,12 +63,12 @@ func (rm *ResourceManager) DeletePod(ctx context.Context, namespace, name string
 	return rm.client.CoreV1().Pods(namespace).Delete(ctx, name, v12.DeleteOptions{})
 }
 
+func (rm *ResourceManager) GetNamespace(namespace string) (*v1.Namespace, error) {
+	return rm.namespaceLister.Get(namespace)
+}
+
 func (rm *ResourceManager) GetPod(namespace, name string) (*v1.Pod, error) {
-	l, err := rm.podLister.Pods(namespace).Get(name)
-	if err == nil {
-		return nil, err
-	}
-	return l, err
+	return rm.podLister.Pods(namespace).Get(name)
 }
 
 // GetConfigMap retrieves the specified config map from the cache.

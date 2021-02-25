@@ -69,6 +69,7 @@ type InitConfig struct {
 	DaemonPort        int32
 	KubeClusterDomain string
 	ResourceManager   *manager.ResourceManager
+	Version           string
 }
 
 type InitFunc func(InitConfig) (Provider, error) // nolint:golint

@@ -95,8 +95,10 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	secretInformer := scmInformerFactory.Core().V1().Secrets()
 	configMapInformer := scmInformerFactory.Core().V1().ConfigMaps()
 	serviceInformer := scmInformerFactory.Core().V1().Services()
+	namespacesInformer := scmInformerFactory.Core().V1().Namespaces()
 
-	rm, err := manager.NewResourceManager(client, podInformer.Lister(), secretInformer.Lister(), configMapInformer.Lister(), serviceInformer.Lister())
+	rm, err := manager.NewResourceManager(client, podInformer.Lister(), secretInformer.Lister(),
+		configMapInformer.Lister(), serviceInformer.Lister(), namespacesInformer.Lister())
 	if err != nil {
 		return errors.Wrap(err, "could not create resource manager")
 	}
@@ -118,6 +120,7 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 		DaemonPort:        c.ListenPort,
 		InternalIP:        os.Getenv("VKUBELET_POD_IP"),
 		KubeClusterDomain: c.KubeClusterDomain,
+		Version:           c.Version,
 	}
 
 	pInit := s.Get(c.Provider)

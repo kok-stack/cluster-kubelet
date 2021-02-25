@@ -25,7 +25,6 @@ func add(total corev1.ResourceList, item corev1.ResourceList) {
 		}
 		total[name] = r
 	}
-
 }
 
 type NodeEventHandler struct {
@@ -58,7 +57,7 @@ func nodeConditions() []corev1.NodeCondition {
 			LastHeartbeatTime:  metav1.Now(),
 			LastTransitionTime: metav1.Now(),
 			Reason:             "KubeletReady",
-			Message:            "kubelet is posting ready status",
+			Message:            "virtual-kubelet is posting ready status",
 		},
 		{
 			Type:               "MemoryPressure",
@@ -66,7 +65,7 @@ func nodeConditions() []corev1.NodeCondition {
 			LastHeartbeatTime:  metav1.Now(),
 			LastTransitionTime: metav1.Now(),
 			Reason:             "KubeletHasSufficientMemory",
-			Message:            "kubelet has sufficient memory available",
+			Message:            "virtual-kubelet has sufficient memory available",
 		},
 		{
 			Type:               "DiskPressure",
@@ -74,7 +73,7 @@ func nodeConditions() []corev1.NodeCondition {
 			LastHeartbeatTime:  metav1.Now(),
 			LastTransitionTime: metav1.Now(),
 			Reason:             "KubeletHasNoDiskPressure",
-			Message:            "kubelet has no disk pressure",
+			Message:            "virtual-kubelet has no disk pressure",
 		},
 		{
 			Type:               "PIDPressure",
@@ -82,7 +81,7 @@ func nodeConditions() []corev1.NodeCondition {
 			LastHeartbeatTime:  metav1.Now(),
 			LastTransitionTime: metav1.Now(),
 			Reason:             "KubeletHasSufficientPID",
-			Message:            "kubelet has sufficient PID available",
+			Message:            "virtual-kubelet has sufficient PID available",
 		},
 	}
 }
