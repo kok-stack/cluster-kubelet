@@ -15,8 +15,11 @@
 package manager
 
 import (
+	"context"
 	v1 "k8s.io/api/core/v1"
+	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 
 	"github.com/kok-stack/cluster-kubelet/log"
@@ -29,11 +32,13 @@ type ResourceManager struct {
 	secretLister    corev1listers.SecretLister
 	configMapLister corev1listers.ConfigMapLister
 	serviceLister   corev1listers.ServiceLister
+	client          *kubernetes.Clientset
 }
 
 // NewResourceManager returns a ResourceManager with the internal maps initialized.
-func NewResourceManager(podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister) (*ResourceManager, error) {
+func NewResourceManager(client *kubernetes.Clientset, podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister) (*ResourceManager, error) {
 	rm := ResourceManager{
+		client:          client,
 		podLister:       podLister,
 		secretLister:    secretLister,
 		configMapLister: configMapLister,
@@ -50,6 +55,18 @@ func (rm *ResourceManager) GetPods() []*v1.Pod {
 	}
 	log.L.Errorf("failed to fetch pods from lister: %v", err)
 	return make([]*v1.Pod, 0)
+}
+
+func (rm *ResourceManager) DeletePod(ctx context.Context, namespace, name string) error {
+	return rm.client.CoreV1().Pods(namespace).Delete(ctx, name, v12.DeleteOptions{})
+}
+
+func (rm *ResourceManager) GetPod(namespace, name string) (*v1.Pod, error) {
+	l, err := rm.podLister.Pods(namespace).Get(name)
+	if err == nil {
+		return nil, err
+	}
+	return l, err
 }
 
 // GetConfigMap retrieves the specified config map from the cache.

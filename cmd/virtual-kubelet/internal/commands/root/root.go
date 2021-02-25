@@ -19,14 +19,14 @@ import (
 	"os"
 	"path"
 
-	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
 	"github.com/kok-stack/cluster-kubelet/cmd/virtual-kubelet/internal/provider"
 	"github.com/kok-stack/cluster-kubelet/errdefs"
 	"github.com/kok-stack/cluster-kubelet/internal/manager"
 	"github.com/kok-stack/cluster-kubelet/log"
 	"github.com/kok-stack/cluster-kubelet/node"
 	"github.com/kok-stack/cluster-kubelet/node/nodeutil"
+	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -96,7 +96,7 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	configMapInformer := scmInformerFactory.Core().V1().ConfigMaps()
 	serviceInformer := scmInformerFactory.Core().V1().Services()
 
-	rm, err := manager.NewResourceManager(podInformer.Lister(), secretInformer.Lister(), configMapInformer.Lister(), serviceInformer.Lister())
+	rm, err := manager.NewResourceManager(client, podInformer.Lister(), secretInformer.Lister(), configMapInformer.Lister(), serviceInformer.Lister())
 	if err != nil {
 		return errors.Wrap(err, "could not create resource manager")
 	}

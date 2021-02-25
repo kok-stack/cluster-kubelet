@@ -2,11 +2,14 @@ package kok
 
 import (
 	"context"
+	"fmt"
 	"github.com/kok-stack/cluster-kubelet/node/api"
 	v1 "k8s.io/api/core/v1"
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/remotecommand"
+	"strings"
 )
 
 func getConfigMaps(pod *v1.Pod) map[string]interface{} {
@@ -94,22 +97,47 @@ func (t *termSize) Next() *remotecommand.TerminalSize {
 
 //TODO:计算virtual pod使用的资源,并考虑重启后如何获取当前已使用资源
 type PodEventHandler struct {
-	p *Provider
+	ctx context.Context
+	p   *Provider
 }
 
 func (p *PodEventHandler) OnAdd(obj interface{}) {
-	pod := obj.(*v1.Pod)
-	p.p.notifier(pod)
+	downPod := obj.(*v1.Pod)
+	fmt.Println("PodEventHandler.OnAdd==================================")
+	upPod, err := p.p.config.ResourceManager.GetPod(downPod.Namespace, downPod.Name)
+	if err != nil {
+		println(err.Error())
+		return
+	}
+	if upPod == nil {
+		return
+	}
+	upPod.Status = downPod.Status
+	p.p.notifier(upPod)
 }
 
 func (p *PodEventHandler) OnUpdate(oldObj, newObj interface{}) {
-	pod := newObj.(*v1.Pod)
-	p.p.notifier(pod)
+	downPod := newObj.(*v1.Pod)
+	fmt.Println("PodEventHandler.OnUpdate===================================")
+	upPod, err := p.p.config.ResourceManager.GetPod(downPod.Namespace, downPod.Name)
+	if err != nil {
+		println(err.Error())
+		return
+	}
+	if upPod == nil {
+		return
+	}
+	upPod.Spec = downPod.Spec
+	upPod.Status = downPod.Status
+	p.p.notifier(upPod)
 }
 
 func (p *PodEventHandler) OnDelete(obj interface{}) {
-	pod := obj.(*v1.Pod)
-	p.p.notifier(pod)
+	downPod := obj.(*v1.Pod)
+	fmt.Println("PodEventHandler.OnAdd============================================")
+	if err := p.p.config.ResourceManager.DeletePod(p.ctx, downPod.GetNamespace(), downPod.GetName()); err != nil {
+		println(err.Error())
+	}
 }
 
 func (p *Provider) checkAndCreateConfigMap(ctx context.Context, cmName string, namespace string) error {
@@ -121,6 +149,7 @@ func (p *Provider) checkAndCreateConfigMap(ctx context.Context, cmName string, n
 		if err != nil {
 			return err
 		}
+		upConfigMap.SetResourceVersion("")
 		_, err = p.downClientSet.CoreV1().ConfigMaps(namespace).Create(ctx, upConfigMap, v12.CreateOptions{})
 		if err != nil {
 			return err
@@ -129,7 +158,28 @@ func (p *Provider) checkAndCreateConfigMap(ctx context.Context, cmName string, n
 	return err
 }
 
+const downVirtualKubeletLabel = "virtual-kubelet"
+const downVirtualKubeletLabelValue = "true"
+
+func getDownPodVirtualKubeletLabels() string {
+	return labels.FormatLabels(map[string]string{
+		downVirtualKubeletLabel: downVirtualKubeletLabelValue,
+	})
+}
+
+func addDownPodVirtualKubeletLabels(pod *v1.Pod) {
+	l := pod.Labels
+	if l == nil {
+		l = make(map[string]string)
+	}
+	l[downVirtualKubeletLabel] = downVirtualKubeletLabelValue
+	pod.Labels = l
+}
+
 func (p *Provider) checkAndCreateSecret(ctx context.Context, secretName string, namespace string) error {
+	if isDefaultSecret(secretName) {
+		return nil
+	}
 	_, err := p.downSecretLister.Secrets(namespace).Get(secretName)
 	//如果不存在则创建
 	if err != nil && errors2.IsNotFound(err) {
@@ -138,10 +188,68 @@ func (p *Provider) checkAndCreateSecret(ctx context.Context, secretName string, 
 		if err != nil {
 			return err
 		}
+		getSecret.SetResourceVersion("")
 		_, err = p.downClientSet.CoreV1().Secrets(namespace).Create(ctx, getSecret, v12.CreateOptions{})
 		if err != nil {
 			return err
 		}
 	}
 	return err
+}
+
+func isDefaultSecret(secretName string) bool {
+	return strings.HasPrefix(secretName, defaultTokenNamePrefix)
+}
+
+const defaultTokenNamePrefix = "default-token"
+
+/*
+通过此处修改pod
+1.在down集群中添加 virtual-kubelet标识
+2.删除Meta中的部分信息
+3.删除nodeName
+4.删除默认的Secret
+5.设置默认的status
+*/
+func trimPod(pod *v1.Pod) {
+	addDownPodVirtualKubeletLabels(pod)
+	trimObjectMeta(pod)
+	pod.Spec.NodeName = ""
+
+	vols := []v1.Volume{}
+	for _, v := range pod.Spec.Volumes {
+		if isDefaultSecret(v.Name) {
+			continue
+		}
+		vols = append(vols, v)
+	}
+	pod.Spec.Containers = trimContainers(pod.Spec.Containers)
+	pod.Spec.InitContainers = trimContainers(pod.Spec.InitContainers)
+	pod.Spec.Volumes = vols
+	pod.Status = v1.PodStatus{}
+}
+
+func trimObjectMeta(pod *v1.Pod) {
+	pod.SetUID("")
+	pod.SetResourceVersion("")
+	pod.SetSelfLink("")
+	pod.SetOwnerReferences(nil)
+}
+
+func trimContainers(containers []v1.Container) []v1.Container {
+	var newContainers []v1.Container
+
+	for _, c := range containers {
+		var volMounts []v1.VolumeMount
+		for _, v := range c.VolumeMounts {
+			if isDefaultSecret(v.Name) {
+				continue
+			}
+			volMounts = append(volMounts, v)
+		}
+		c.VolumeMounts = volMounts
+		newContainers = append(newContainers, c)
+	}
+
+	return newContainers
 }

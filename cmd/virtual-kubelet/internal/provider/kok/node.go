@@ -1,6 +1,7 @@
 package kok
 
 import (
+	"context"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +29,8 @@ func add(total corev1.ResourceList, item corev1.ResourceList) {
 }
 
 type NodeEventHandler struct {
-	p *Provider
+	ctx context.Context
+	p   *Provider
 }
 
 //TODO:计算virtual node资源

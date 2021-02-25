@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/ioutil"
 	v1 "k8s.io/api/core/v1"
+	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,12 +42,13 @@ type Provider struct {
 	startTime            time.Time
 	notifier             func(*v1.Pod)
 	downConfig           *rest.Config
-	nodeLister           corev1listers.NodeLister
-	podLister            corev1listers.PodLister
+	downNodeLister       corev1listers.NodeLister
+	downPodLister        corev1listers.PodLister
 	downConfigMapLister  corev1listers.ConfigMapLister
 	downSecretLister     corev1listers.SecretLister
 	downClientSet        *kubernetes.Clientset
 	downMetricsClientSet *versioned.Clientset
+	downNamespaceLister  corev1listers.NamespaceLister
 }
 
 func (p *Provider) GetStatsSummary(ctx context.Context) (*stats.Summary, error) {
@@ -130,34 +132,68 @@ func (p *Provider) NotifyPods(ctx context.Context, f func(*v1.Pod)) {
 
 func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	namespace := pod.Namespace
-	secrets := getSecrets(pod)
-	for s := range secrets {
+	if err := p.checkAndCreateNamespace(ctx, namespace); err != nil {
+		return err
+	}
+	//TODO:serviceAccount,pvc处理
+	//TODO:创建的重试机制
+	for s := range getSecrets(pod) {
 		if err := p.checkAndCreateSecret(ctx, s, namespace); err != nil {
 			return err
 		}
 	}
-	configMaps := getConfigMaps(pod)
-	for s := range configMaps {
+	for s := range getConfigMaps(pod) {
 		if err := p.checkAndCreateConfigMap(ctx, s, namespace); err != nil {
 			return err
 		}
 	}
-
+	trimPod(pod)
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Create(ctx, pod, v12.CreateOptions{})
 	return err
 }
 
+func (p *Provider) checkAndCreateNamespace(ctx context.Context, namespace string) error {
+	//TODO:复制label等信息到down 集群
+	if _, err := p.downNamespaceLister.Get(namespace); err != nil {
+		if !errors2.IsNotFound(err) {
+			return err
+		}
+		if _, createErr := p.downClientSet.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: namespace,
+			},
+		}, v12.CreateOptions{}); createErr != nil && errors2.IsAlreadyExists(createErr) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (p *Provider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
+	trimPod(pod)
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Update(ctx, pod, v12.UpdateOptions{})
 	return err
 }
 
 func (p *Provider) DeletePod(ctx context.Context, pod *v1.Pod) error {
-	return p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{})
+	err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{})
+	if (err != nil && errors2.IsNotFound(err)) || err == nil {
+		return nil
+	}
+	return err
 }
 
 func (p *Provider) GetPod(ctx context.Context, namespace, name string) (*v1.Pod, error) {
-	return p.podLister.Pods(namespace).Get(name)
+	pod, err := p.config.ResourceManager.GetPod(namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	down, err := p.downPodLister.Pods(namespace).Get(name)
+	if err != nil {
+		return nil, err
+	}
+	pod.Status = down.Status
+	return pod, nil
 }
 
 func (p *Provider) GetPodStatus(ctx context.Context, namespace, name string) (*v1.PodStatus, error) {
@@ -169,7 +205,23 @@ func (p *Provider) GetPodStatus(ctx context.Context, namespace, name string) (*v
 }
 
 func (p *Provider) GetPods(ctx context.Context) ([]*v1.Pod, error) {
-	return p.podLister.List(labels.Everything())
+	//获取down集群的virtual-kubelet的pod,然后转换status到up集群
+	list, err := p.downPodLister.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("down集群pod数量:", len(list))
+	pods := make([]*v1.Pod, len(list))
+	for i, pod := range list {
+		getPod, err := p.config.ResourceManager.GetPod(pod.Namespace, pod.Name)
+		if err != nil {
+			return nil, err
+		}
+		getPod.Status = pod.Status
+		pods[i] = getPod
+	}
+	return pods, nil
+	//return p.downPodLister.List(labels.Everything())
 	//list, err := p.downClientSet.CoreV1().Pods("").List(ctx, v12.ListOptions{})
 	//if err != nil {
 	//	return nil, err
@@ -264,7 +316,7 @@ func (p *Provider) ConfigureNode(ctx context.Context, node *v1.Node) {
 	ctx, span := trace.StartSpan(ctx, "ConfigureNode")
 	defer span.End()
 
-	nodes, err := p.nodeLister.List(labels.Nothing())
+	nodes, err := p.downNodeLister.List(labels.Nothing())
 	if err != nil {
 		return
 	}
@@ -303,11 +355,16 @@ func (p *Provider) start(ctx context.Context) error {
 	p.downClientSet = clientset
 	p.downConfig = c
 	p.downMetricsClientSet = metricsClientSet
-	factory := informers.NewSharedInformerFactory(clientset, time.Minute)
-	p.nodeLister = factory.Core().V1().Nodes().Lister()
-	p.podLister = factory.Core().V1().Pods().Lister()
-	factory.Core().V1().Nodes().Informer().AddEventHandler(&NodeEventHandler{p})
-	factory.Core().V1().Pods().Informer().AddEventHandler(&PodEventHandler{p})
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, time.Minute, informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+		options.LabelSelector = getDownPodVirtualKubeletLabels()
+	}))
+	//TODO:node 不需要label来进行选择
+	//factory := informers.NewSharedInformerFactory(clientset, time.Minute)
+	p.downNodeLister = factory.Core().V1().Nodes().Lister()
+	p.downPodLister = factory.Core().V1().Pods().Lister()
+	p.downNamespaceLister = factory.Core().V1().Namespaces().Lister()
+	factory.Core().V1().Nodes().Informer().AddEventHandler(&NodeEventHandler{ctx, p})
+	factory.Core().V1().Pods().Informer().AddEventHandler(&PodEventHandler{ctx, p})
 	p.downConfigMapLister = factory.Core().V1().ConfigMaps().Lister()
 	p.downSecretLister = factory.Core().V1().Secrets().Lister()
 	factory.Start(ctx.Done())
