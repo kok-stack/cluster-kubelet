@@ -97,8 +97,7 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	serviceInformer := scmInformerFactory.Core().V1().Services()
 	namespacesInformer := scmInformerFactory.Core().V1().Namespaces()
 
-	rm, err := manager.NewResourceManager(client, podInformer.Lister(), secretInformer.Lister(),
-		configMapInformer.Lister(), serviceInformer.Lister(), namespacesInformer.Lister())
+	rm, err := manager.NewResourceManagerWithMultiLister(client, podInformer.Lister(), secretInformer.Lister(), configMapInformer.Lister(), serviceInformer.Lister(), namespacesInformer.Lister())
 	if err != nil {
 		return errors.Wrap(err, "could not create resource manager")
 	}

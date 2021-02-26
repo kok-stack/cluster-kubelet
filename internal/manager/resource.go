@@ -37,7 +37,7 @@ type ResourceManager struct {
 }
 
 // NewResourceManager returns a ResourceManager with the internal maps initialized.
-func NewResourceManager(client *kubernetes.Clientset, podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister, namespaceLister corev1listers.NamespaceLister) (*ResourceManager, error) {
+func NewResourceManagerWithMultiLister(client *kubernetes.Clientset, podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister, namespaceLister corev1listers.NamespaceLister) (*ResourceManager, error) {
 	rm := ResourceManager{
 		client:          client,
 		podLister:       podLister,
@@ -45,6 +45,17 @@ func NewResourceManager(client *kubernetes.Clientset, podLister corev1listers.Po
 		configMapLister: configMapLister,
 		serviceLister:   serviceLister,
 		namespaceLister: namespaceLister,
+	}
+	return &rm, nil
+}
+
+// NewResourceManager returns a ResourceManager with the internal maps initialized.
+func NewResourceManager(podLister corev1listers.PodLister, secretLister corev1listers.SecretLister, configMapLister corev1listers.ConfigMapLister, serviceLister corev1listers.ServiceLister) (*ResourceManager, error) {
+	rm := ResourceManager{
+		podLister:       podLister,
+		secretLister:    secretLister,
+		configMapLister: configMapLister,
+		serviceLister:   serviceLister,
 	}
 	return &rm, nil
 }

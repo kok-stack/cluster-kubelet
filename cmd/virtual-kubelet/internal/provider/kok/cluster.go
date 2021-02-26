@@ -132,18 +132,19 @@ func (p *Provider) NotifyPods(ctx context.Context, f func(*v1.Pod)) {
 
 func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	namespace := pod.Namespace
-	if err := p.checkAndCreateNamespace(ctx, namespace); err != nil {
+	if err := p.syncNamespaces(ctx, namespace); err != nil {
 		return err
 	}
 	//TODO:serviceAccount,pvc处理
-	//TODO:创建的重试机制
+	//TODO:创建的重试机制,用于pod先于依赖资源的创建
+	//TODO:如何处理pod依赖的对象 serviceAccount-->role-->rolebinding,pvc-->pv-->storageClass,以及其他一些隐试依赖
 	for s := range getSecrets(pod) {
-		if err := p.checkAndCreateSecret(ctx, s, namespace); err != nil {
+		if err := p.syncSecret(ctx, s, namespace); err != nil {
 			return err
 		}
 	}
 	for s := range getConfigMaps(pod) {
-		if err := p.checkAndCreateConfigMap(ctx, s, namespace); err != nil {
+		if err := p.syncConfigMap(ctx, s, namespace); err != nil {
 			return err
 		}
 	}
@@ -152,7 +153,7 @@ func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	return err
 }
 
-func (p *Provider) checkAndCreateNamespace(ctx context.Context, namespace string) error {
+func (p *Provider) syncNamespaces(ctx context.Context, namespace string) error {
 	upNs, err := p.config.ResourceManager.GetNamespace(namespace)
 	if err != nil {
 		return err
@@ -183,7 +184,10 @@ func (p *Provider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 
 func (p *Provider) DeletePod(ctx context.Context, pod *v1.Pod) error {
 	//up-->down
-	err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{})
+	i := int64(0)
+	err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{
+		GracePeriodSeconds: &i,
+	})
 	if (err != nil && errors2.IsNotFound(err)) || err == nil {
 		return nil
 	}
@@ -217,7 +221,6 @@ func (p *Provider) GetPods(ctx context.Context) ([]*v1.Pod, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("down集群pod数量:", len(list))
 	pods := make([]*v1.Pod, len(list))
 	for i, pod := range list {
 		getPod, err := p.config.ResourceManager.GetPod(pod.Namespace, pod.Name)
@@ -420,7 +423,6 @@ func NewProvider(ctx context.Context, cfg provider.InitConfig) (*Provider, error
 	p := &Provider{
 		config:    c,
 		startTime: time.Now(),
-		notifier:  nil,
 	}
 	if err = p.start(ctx); err != nil {
 		return nil, err

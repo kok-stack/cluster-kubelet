@@ -213,7 +213,7 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 	if cfg.RateLimiter == nil {
 		cfg.RateLimiter = workqueue.DefaultControllerRateLimiter()
 	}
-	rm, err := manager.NewResourceManager(nil, cfg.PodInformer.Lister(), cfg.SecretInformer.Lister(), cfg.ConfigMapInformer.Lister(), cfg.ServiceInformer.Lister(), nil)
+	rm, err := manager.NewResourceManager(cfg.PodInformer.Lister(), cfg.SecretInformer.Lister(), cfg.ConfigMapInformer.Lister(), cfg.ServiceInformer.Lister())
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "could not create resource manager")
 	}

@@ -9,6 +9,7 @@ import (
 	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/remotecommand"
+	"reflect"
 	"strings"
 )
 
@@ -112,21 +113,23 @@ func (p *PodEventHandler) OnAdd(obj interface{}) {
 	if upPod == nil {
 		return
 	}
+	upPod = upPod.DeepCopy()
 	upPod.Status = downPod.Status
 	p.p.notifier(upPod)
 }
 
 func (p *PodEventHandler) OnUpdate(oldObj, newObj interface{}) {
 	downPod := newObj.(*v1.Pod)
-	fmt.Println("PodEventHandler.OnUpdate===================================")
 	upPod, err := p.p.config.ResourceManager.GetPod(downPod.Namespace, downPod.Name)
 	if err != nil {
 		println(err.Error())
 		return
 	}
 	if upPod == nil {
+		fmt.Println("没有获取到up集群的pod,返回", downPod.Namespace, downPod.Name)
 		return
 	}
+	upPod = upPod.DeepCopy()
 	upPod.Spec = downPod.Spec
 	upPod.Status = downPod.Status
 	p.p.notifier(upPod)
@@ -134,7 +137,6 @@ func (p *PodEventHandler) OnUpdate(oldObj, newObj interface{}) {
 
 func (p *PodEventHandler) OnDelete(obj interface{}) {
 	downPod := obj.(*v1.Pod)
-	fmt.Println("PodEventHandler.OnAdd============================================")
 	err := p.p.config.ResourceManager.DeletePod(p.ctx, downPod.GetNamespace(), downPod.GetName())
 	if (err != nil && errors2.IsNotFound(err)) || err == nil {
 		return
@@ -143,17 +145,30 @@ func (p *PodEventHandler) OnDelete(obj interface{}) {
 	}
 }
 
-func (p *Provider) checkAndCreateConfigMap(ctx context.Context, cmName string, namespace string) error {
-	_, err := p.downConfigMapLister.ConfigMaps(namespace).Get(cmName)
-	//如果不存在则创建
-	if err != nil && errors2.IsNotFound(err) {
-		//从当前集群获取cm,并在down集群中创建
-		upConfigMap, err := p.config.ResourceManager.GetConfigMap(cmName, namespace)
+func (p *Provider) syncConfigMap(ctx context.Context, cmName string, namespace string) error {
+	upConfigMap, err := p.config.ResourceManager.GetConfigMap(cmName, namespace)
+	if err != nil {
+		return err
+	}
+	downCM, err := p.downConfigMapLister.ConfigMaps(namespace).Get(cmName)
+	if err != nil {
+		if !errors2.IsNotFound(err) {
+			return err
+		}
+		//如果不存在则创建
+		trimObjectMeta(&upConfigMap.ObjectMeta)
+		_, err = p.downClientSet.CoreV1().ConfigMaps(namespace).Create(ctx, upConfigMap, v12.CreateOptions{})
 		if err != nil {
 			return err
 		}
-		upConfigMap.SetResourceVersion("")
-		_, err = p.downClientSet.CoreV1().ConfigMaps(namespace).Create(ctx, upConfigMap, v12.CreateOptions{})
+	} else {
+		//存在则需要比对内容并更新
+		trimObjectMeta(&upConfigMap.ObjectMeta)
+		trimObjectMeta(&downCM.ObjectMeta)
+		if reflect.DeepEqual(upConfigMap, downCM) {
+			return nil
+		}
+		_, err = p.downClientSet.CoreV1().ConfigMaps(namespace).Update(ctx, upConfigMap, v12.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -179,25 +194,38 @@ func addDownPodVirtualKubeletLabels(pod *v1.Pod) {
 	pod.Labels = l
 }
 
-func (p *Provider) checkAndCreateSecret(ctx context.Context, secretName string, namespace string) error {
+func (p *Provider) syncSecret(ctx context.Context, secretName string, namespace string) error {
 	if isDefaultSecret(secretName) {
 		return nil
 	}
-	_, err := p.downSecretLister.Secrets(namespace).Get(secretName)
+	upSecret, err := p.config.ResourceManager.GetSecret(secretName, namespace)
+	if err != nil {
+		return err
+	}
+	downSecret, err := p.downSecretLister.Secrets(namespace).Get(secretName)
 	//如果不存在则创建
-	if err != nil && errors2.IsNotFound(err) {
-		//从当前集群获取cm,并在down集群中创建
-		getSecret, err := p.config.ResourceManager.GetSecret(secretName, namespace)
+	if err != nil {
+		if !errors2.IsNotFound(err) {
+			return err
+		}
+		trimObjectMeta(&upSecret.ObjectMeta)
+		_, err = p.downClientSet.CoreV1().Secrets(namespace).Create(ctx, upSecret, v12.CreateOptions{})
 		if err != nil {
 			return err
 		}
-		getSecret.SetResourceVersion("")
-		_, err = p.downClientSet.CoreV1().Secrets(namespace).Create(ctx, getSecret, v12.CreateOptions{})
+	} else {
+		//存在则对比,更新
+		trimObjectMeta(&upSecret.ObjectMeta)
+		trimObjectMeta(&downSecret.ObjectMeta)
+		if reflect.DeepEqual(upSecret, downSecret) {
+			return nil
+		}
+		_, err = p.downClientSet.CoreV1().Secrets(namespace).Update(ctx, upSecret, v12.UpdateOptions{})
 		if err != nil {
 			return err
 		}
 	}
-	return err
+	return nil
 }
 
 func isDefaultSecret(secretName string) bool {
@@ -229,7 +257,7 @@ func trimPod(pod *v1.Pod) {
 	pod.Spec.Containers = trimContainers(pod.Spec.Containers)
 	pod.Spec.InitContainers = trimContainers(pod.Spec.InitContainers)
 	pod.Spec.Volumes = vols
-	pod.Status = v1.PodStatus{}
+	//pod.Status = v1.PodStatus{}
 }
 
 func trimObjectMeta(meta *v12.ObjectMeta) {

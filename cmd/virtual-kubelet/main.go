@@ -55,7 +55,7 @@ func main() {
 
 	var opts root.Opts
 	optsErr := root.SetDefaultOpts(&opts)
-	opts.Version = strings.Join([]string{k8sVersion, "vk", buildVersion}, "-")
+	opts.Version = strings.Join([]string{k8sVersion, "kok", "vk", buildVersion}, "-")
 
 	s := provider.NewStore()
 	registerMock(s)
