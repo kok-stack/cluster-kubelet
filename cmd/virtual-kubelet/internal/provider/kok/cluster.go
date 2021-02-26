@@ -184,10 +184,7 @@ func (p *Provider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 
 func (p *Provider) DeletePod(ctx context.Context, pod *v1.Pod) error {
 	//up-->down
-	i := int64(0)
-	err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{
-		GracePeriodSeconds: &i,
-	})
+	err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{})
 	if (err != nil && errors2.IsNotFound(err)) || err == nil {
 		return nil
 	}
@@ -338,6 +335,8 @@ func (p *Provider) ConfigureNode(ctx context.Context, node *v1.Node) {
 			Port: p.config.DaemonPort,
 		},
 	}
+	node.Status.NodeInfo.OSImage = p.config.Version
+	node.Status.NodeInfo.KernelVersion = p.config.Version
 	node.Status.NodeInfo.OperatingSystem = "linux"
 	node.Status.NodeInfo.Architecture = "amd64"
 	node.ObjectMeta.Labels[v1.LabelArchStable] = "amd64"
