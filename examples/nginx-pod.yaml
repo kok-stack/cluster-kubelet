@@ -5,7 +5,7 @@ metadata:
 spec:
   containers:
   - image: nginx
-#    imagePullPolicy: Always
+    imagePullPolicy: Always
     name: nginx
     ports:
     - containerPort: 80
@@ -14,14 +14,14 @@ spec:
     - containerPort: 443
       name: https
   nodeName: vkubelet-mock-0
-#  dnsPolicy: ClusterFirst
-#  nodeSelector:
-#    kubernetes.io/role: agent
-#    beta.kubernetes.io/os: linux
-#    kubernetes.io/hostname: vkubelet-mock-0
-#    type: virtual-kubelet
-#  tolerations:
-#  - key: virtual-kubelet.io/provider
-#    operator: Exists
+  dnsPolicy: ClusterFirst
+  nodeSelector:
+    kubernetes.io/role: agent
+    beta.kubernetes.io/os: linux
+    kubernetes.io/hostname: vkubelet-mock-0
+    type: virtual-kubelet
+  tolerations:
+  - key: virtual-kubelet.io/provider
+    operator: Exists
 #  - key: azure.com/aci
 #    effect: NoSchedule

@@ -59,6 +59,7 @@ func (mv mapVar) Type() string {
 
 func installFlags(flags *pflag.FlagSet, c *Opts) {
 	flags.StringVar(&c.KubeConfigPath, "kubeconfig", c.KubeConfigPath, "kube config file to use for connecting to the Kubernetes API server")
+	flags.StringVar(&c.DownKubeConfigPath, "down-kubeconfig", c.DownKubeConfigPath, "down kube config file to use for connecting to the Kubernetes API server")
 	flags.StringVar(&c.KubeNamespace, "namespace", c.KubeNamespace, "kubernetes namespace (default is 'all')")
 	flags.StringVar(&c.KubeClusterDomain, "cluster-domain", c.KubeClusterDomain, "kubernetes cluster-domain (default is 'cluster.local')")
 	flags.StringVar(&c.NodeName, "nodename", c.NodeName, "kubernetes node name")

@@ -50,6 +50,8 @@ const (
 type Opts struct {
 	// Path to the kubeconfig to use to connect to the Kubernetes API server.
 	KubeConfigPath string
+	// down kubeconfig path
+	DownKubeConfigPath string
 	// Namespace to watch for pods and other resources
 	KubeNamespace string
 	// Domain suffix to append to search domains for the pods created by virtual-kubelet

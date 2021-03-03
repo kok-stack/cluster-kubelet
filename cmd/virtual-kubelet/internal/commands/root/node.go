@@ -26,6 +26,11 @@ import (
 )
 
 const osLabel = "beta.kubernetes.io/os"
+const NodeTypeLabel = "type"
+const NodeRoleLabel = "kubernetes.io/role"
+const NodeHostNameLabel = "kubernetes.io/hostname"
+const NodeTypeValue = "virtual-kubelet"
+const NodeRoleValue = "agent"
 
 // NodeFromProvider builds a kubernetes node object from a provider
 // This is a temporary solution until node stuff actually split off from the provider interface itself.
@@ -40,9 +45,9 @@ func NodeFromProvider(ctx context.Context, name string, taint *v1.Taint, p provi
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				"type":                   "virtual-kubelet",
-				"kubernetes.io/role":     "agent",
-				"kubernetes.io/hostname": name,
+				NodeTypeLabel:     NodeTypeValue,
+				NodeRoleLabel:     NodeRoleValue,
+				NodeHostNameLabel: name,
 			},
 		},
 		Spec: v1.NodeSpec{

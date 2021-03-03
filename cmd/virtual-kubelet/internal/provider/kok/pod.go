@@ -3,6 +3,7 @@ package kok
 import (
 	"context"
 	"fmt"
+	"github.com/kok-stack/cluster-kubelet/cmd/virtual-kubelet/internal/commands/root"
 	"github.com/kok-stack/cluster-kubelet/node/api"
 	v1 "k8s.io/api/core/v1"
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
@@ -241,8 +242,10 @@ const defaultTokenNamePrefix = "default-token"
 3.删除nodeName
 4.删除默认的Secret
 5.设置默认的status
+6.删除nodeSelector中virtual-kubelet标识
+7.删除tolerations中的virtual-kubelet标识
 */
-func trimPod(pod *v1.Pod) {
+func trimPod(pod *v1.Pod, nodeName string) {
 	addDownPodVirtualKubeletLabels(pod)
 	trimObjectMeta(&pod.ObjectMeta)
 	pod.Spec.NodeName = ""
@@ -257,7 +260,32 @@ func trimPod(pod *v1.Pod) {
 	pod.Spec.Containers = trimContainers(pod.Spec.Containers)
 	pod.Spec.InitContainers = trimContainers(pod.Spec.InitContainers)
 	pod.Spec.Volumes = vols
-	//pod.Status = v1.PodStatus{}
+	pod.Status = v1.PodStatus{}
+	trimNodeSelector(pod, nodeName)
+	trimTolerations(pod)
+}
+
+func trimTolerations(pod *v1.Pod) {
+	tolerations := pod.Spec.Tolerations
+	for i, item := range tolerations {
+		if item.Key != root.DefaultTaintKey {
+			continue
+		}
+		tolerations = append(tolerations[0:i], tolerations[i+1:]...)
+	}
+	pod.Spec.Tolerations = tolerations
+}
+
+func trimNodeSelector(pod *v1.Pod, nodeName string) {
+	for s, v := range pod.Spec.NodeSelector {
+		if s != root.NodeTypeLabel && s != root.NodeRoleLabel && s != root.NodeHostNameLabel {
+			continue
+		}
+		if v != root.NodeRoleValue && v != root.NodeTypeValue && v != nodeName {
+			continue
+		}
+		delete(pod.Spec.NodeSelector, s)
+	}
 }
 
 func trimObjectMeta(meta *v12.ObjectMeta) {

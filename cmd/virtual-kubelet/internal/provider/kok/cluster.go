@@ -2,14 +2,12 @@ package kok
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/kok-stack/cluster-kubelet/cmd/virtual-kubelet/internal/provider"
 	"github.com/kok-stack/cluster-kubelet/node/api"
 	"github.com/kok-stack/cluster-kubelet/trace"
 	"github.com/pkg/errors"
 	"io"
-	"io/ioutil"
 	v1 "k8s.io/api/core/v1"
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -30,15 +28,9 @@ import (
 	"time"
 )
 
-//TODO:demo 配置文件
-type config struct {
-	provider.InitConfig
-	DownKubeConfig string `json:"down_kube_config"`
-}
-
 //TODO:tracing
 type Provider struct {
-	config               *config
+	config               provider.InitConfig
 	startTime            time.Time
 	notifier             func(*v1.Pod)
 	downConfig           *rest.Config
@@ -148,7 +140,7 @@ func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 			return err
 		}
 	}
-	trimPod(pod)
+	trimPod(pod, p.config.NodeName)
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Create(ctx, pod, v12.CreateOptions{})
 	return err
 }
@@ -177,7 +169,7 @@ func (p *Provider) syncNamespaces(ctx context.Context, namespace string) error {
 
 func (p *Provider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 	//up-->down
-	trimPod(pod)
+	trimPod(pod, p.config.NodeName)
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Update(ctx, pod, v12.UpdateOptions{})
 	return err
 }
@@ -346,7 +338,7 @@ func (p *Provider) ConfigureNode(ctx context.Context, node *v1.Node) {
 }
 
 func (p *Provider) start(ctx context.Context) error {
-	c, metricsClientSet, clientset, err := clientSetFromEnv(p.config.DownKubeConfig)
+	c, metricsClientSet, clientset, err := clientSetFromEnv(p.config.DownKubeConfigPath)
 	if err != nil {
 		return err
 	}
@@ -409,21 +401,11 @@ func clientSetFromEnvKubeConfigPath(kubeConfigPath string) (*rest.Config, error)
 }
 
 func NewProvider(ctx context.Context, cfg provider.InitConfig) (*Provider, error) {
-	c := &config{}
-	file, err := ioutil.ReadFile(cfg.ConfigPath)
-	if err != nil {
-		return nil, err
-	}
-	if err = json.Unmarshal(file, c); err != nil {
-		return nil, err
-	}
-	c.InitConfig = cfg
-
 	p := &Provider{
-		config:    c,
+		config:    cfg,
 		startTime: time.Now(),
 	}
-	if err = p.start(ctx); err != nil {
+	if err := p.start(ctx); err != nil {
 		return nil, err
 	}
 	return p, nil
