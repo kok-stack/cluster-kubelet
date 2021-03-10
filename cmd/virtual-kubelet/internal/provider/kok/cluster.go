@@ -2,18 +2,20 @@ package kok
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/kok-stack/cluster-kubelet/cmd/virtual-kubelet/internal/provider"
+	"github.com/kok-stack/cluster-kubelet/log"
 	"github.com/kok-stack/cluster-kubelet/node/api"
 	"github.com/kok-stack/cluster-kubelet/trace"
 	"github.com/pkg/errors"
 	"io"
 	v1 "k8s.io/api/core/v1"
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -21,18 +23,21 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
-	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
-	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 	"os"
 	"time"
 )
 
-//TODO:tracing
+const (
+	namespaceKey     = "namespace"
+	nameKey          = "name"
+	containerNameKey = "containerName"
+	nodeNameKey      = "nodeName"
+)
+
 type Provider struct {
 	config               provider.InitConfig
 	startTime            time.Time
-	notifier             func(*v1.Pod)
 	downConfig           *rest.Config
 	downNodeLister       corev1listers.NodeLister
 	downPodLister        corev1listers.PodLister
@@ -41,107 +46,57 @@ type Provider struct {
 	downClientSet        *kubernetes.Clientset
 	downMetricsClientSet *versioned.Clientset
 	downNamespaceLister  corev1listers.NamespaceLister
-}
-
-func (p *Provider) GetStatsSummary(ctx context.Context) (*stats.Summary, error) {
-	ctx, span := trace.StartSpan(ctx, "ConfigureNode")
-	defer span.End()
-
-	var summary stats.Summary
-
-	metrics, err := p.downMetricsClientSet.MetricsV1beta1().PodMetricses(v1.NamespaceAll).List(ctx, v12.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	var cpuAll, memoryAll uint64
-	var t time.Time
-	for _, metric := range metrics.Items {
-		podStats := convert2PodStats(&metric)
-		summary.Pods = append(summary.Pods, *podStats)
-		cpuAll += *podStats.CPU.UsageNanoCores
-		memoryAll += *podStats.Memory.WorkingSetBytes
-		if t.IsZero() {
-			t = podStats.StartTime.Time
-		}
-	}
-	summary.Node = stats.NodeStats{
-		NodeName:  p.config.NodeName,
-		StartTime: metav1.Time{Time: t},
-		CPU: &stats.CPUStats{
-			Time:           metav1.Time{Time: t},
-			UsageNanoCores: &cpuAll,
-		},
-		Memory: &stats.MemoryStats{
-			Time:            metav1.Time{Time: t},
-			WorkingSetBytes: &memoryAll,
-		},
-	}
-	return &summary, nil
-}
-
-func convert2PodStats(metric *v1beta1.PodMetrics) *stats.PodStats {
-	stat := &stats.PodStats{}
-	if metric == nil {
-		return nil
-	}
-	stat.PodRef.Namespace = metric.Namespace
-	stat.PodRef.Name = metric.Name
-	stat.StartTime = metric.Timestamp
-
-	containerStats := stats.ContainerStats{}
-	var cpuAll, memoryAll uint64
-	for _, c := range metric.Containers {
-		containerStats.StartTime = metric.Timestamp
-		containerStats.Name = c.Name
-		nanoCore := uint64(c.Usage.Cpu().ScaledValue(resource.Nano))
-		memory := uint64(c.Usage.Memory().Value())
-		containerStats.CPU = &stats.CPUStats{
-			Time:           metric.Timestamp,
-			UsageNanoCores: &nanoCore,
-		}
-		containerStats.Memory = &stats.MemoryStats{
-			Time:            metric.Timestamp,
-			WorkingSetBytes: &memory,
-		}
-		cpuAll += nanoCore
-		memoryAll += memory
-		stat.Containers = append(stat.Containers, containerStats)
-	}
-	stat.CPU = &stats.CPUStats{
-		Time:           metric.Timestamp,
-		UsageNanoCores: &cpuAll,
-	}
-	stat.Memory = &stats.MemoryStats{
-		Time:            metric.Timestamp,
-		WorkingSetBytes: &memoryAll,
-	}
-	return stat
+	podHandler           *PodEventHandler
+	nodeHandler          *NodeEventHandler
 }
 
 func (p *Provider) NotifyPods(ctx context.Context, f func(*v1.Pod)) {
-	p.notifier = f
+	p.podHandler.notifyFunc = f
+	p.podHandler.start(ctx)
 }
 
 func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
+	ctx, span := trace.StartSpan(ctx, "创建pod")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name, nodeNameKey, p.config.NodeName)
+	log.G(ctx).Info("创建pod")
+
 	namespace := pod.Namespace
-	if err := p.syncNamespaces(ctx, namespace); err != nil {
-		return err
-	}
-	//TODO:serviceAccount,pvc处理
-	//TODO:创建的重试机制,用于pod先于依赖资源的创建
-	//TODO:如何处理pod依赖的对象 serviceAccount-->role-->rolebinding,pvc-->pv-->storageClass,以及其他一些隐试依赖
-	for s := range getSecrets(pod) {
-		if err := p.syncSecret(ctx, s, namespace); err != nil {
-			return err
+	secrets := getSecrets(pod)
+	configMaps := getConfigMaps(pod)
+	timeCtx, cancelFunc := context.WithTimeout(ctx, time.Second*10)
+	defer cancelFunc()
+	if err2 := wait.PollImmediateUntil(time.Microsecond*100, func() (done bool, err error) {
+		if err := p.syncNamespaces(ctx, namespace); err != nil {
+			return false, err
 		}
-	}
-	for s := range getConfigMaps(pod) {
-		if err := p.syncConfigMap(ctx, s, namespace); err != nil {
-			return err
+		//TODO:serviceAccount,pvc处理
+		//TODO:如何处理pod依赖的对象 serviceAccount-->role-->rolebinding,pvc-->pv-->storageClass,以及其他一些隐试依赖
+		for s := range secrets {
+			if err := p.syncSecret(ctx, s, namespace); err != nil {
+				return false, err
+			}
 		}
+		for s := range configMaps {
+			if err := p.syncConfigMap(ctx, s, namespace); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}, timeCtx.Done()); err2 != nil {
+		return err2
 	}
+
 	trimPod(pod, p.config.NodeName)
+
+	marshal, _ := json.Marshal(pod)
+	log.G(ctx).Debugf("pod内容为:", string(marshal))
+
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Create(ctx, pod, v12.CreateOptions{})
+	if err != nil {
+		log.G(ctx).Warnf("创建pod失败", err)
+		span.SetStatus(err)
+	}
 	return err
 }
 
@@ -169,27 +124,46 @@ func (p *Provider) syncNamespaces(ctx context.Context, namespace string) error {
 
 func (p *Provider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 	//up-->down
+	ctx, span := trace.StartSpan(ctx, "更新pod")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name, nodeNameKey, p.config.NodeName)
+
 	trimPod(pod, p.config.NodeName)
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Update(ctx, pod, v12.UpdateOptions{})
+	if err != nil {
+		span.SetStatus(err)
+	}
 	return err
 }
 
 func (p *Provider) DeletePod(ctx context.Context, pod *v1.Pod) error {
 	//up-->down
+	ctx, span := trace.StartSpan(ctx, "删除pod")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name, nodeNameKey, p.config.NodeName)
+
 	err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Delete(ctx, pod.GetName(), v12.DeleteOptions{})
 	if (err != nil && errors2.IsNotFound(err)) || err == nil {
 		return nil
+	} else {
+		span.SetStatus(err)
 	}
 	return err
 }
 
 func (p *Provider) GetPod(ctx context.Context, namespace, name string) (*v1.Pod, error) {
+	ctx, span := trace.StartSpan(ctx, "获取pod")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, name, nodeNameKey, p.config.NodeName)
+
 	pod, err := p.config.ResourceManager.GetPod(namespace, name)
 	if err != nil {
+		span.SetStatus(err)
 		return nil, err
 	}
 	down, err := p.downPodLister.Pods(namespace).Get(name)
 	if err != nil {
+		span.SetStatus(err)
 		return nil, err
 	}
 	pod.Status = down.Status
@@ -197,14 +171,23 @@ func (p *Provider) GetPod(ctx context.Context, namespace, name string) (*v1.Pod,
 }
 
 func (p *Provider) GetPodStatus(ctx context.Context, namespace, name string) (*v1.PodStatus, error) {
+	ctx, span := trace.StartSpan(ctx, "获取pod状态")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, name, nodeNameKey, p.config.NodeName)
+
 	pod, err := p.GetPod(ctx, namespace, name)
 	if err != nil {
+		span.SetStatus(err)
 		return nil, err
 	}
 	return &pod.Status, nil
 }
 
 func (p *Provider) GetPods(ctx context.Context) ([]*v1.Pod, error) {
+	ctx, span := trace.StartSpan(ctx, "获取pod列表")
+	defer span.End()
+	ctx = addAttributes(ctx, span, nodeNameKey, p.config.NodeName)
+
 	//获取down集群的virtual-kubelet的pod,然后转换status到up集群
 	list, err := p.downPodLister.List(labels.Everything())
 	if err != nil {
@@ -214,6 +197,8 @@ func (p *Provider) GetPods(ctx context.Context) ([]*v1.Pod, error) {
 	for i, pod := range list {
 		getPod, err := p.config.ResourceManager.GetPod(pod.Namespace, pod.Name)
 		if err != nil {
+			span.Logger().WithField(namespaceKey, pod.Namespace).WithField(nameKey, pod.Name).Error(err)
+			span.SetStatus(err)
 			return nil, err
 		}
 		getPod.Status = pod.Status
@@ -223,6 +208,10 @@ func (p *Provider) GetPods(ctx context.Context) ([]*v1.Pod, error) {
 }
 
 func (p *Provider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, opts api.ContainerLogOpts) (io.ReadCloser, error) {
+	ctx, span := trace.StartSpan(ctx, "获取pod日志")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, podName, nodeNameKey, p.config.NodeName)
+
 	tailLine := int64(opts.Tail)
 	limitBytes := int64(opts.LimitBytes)
 	sinceSeconds := opts.SinceSeconds
@@ -251,10 +240,18 @@ func (p *Provider) GetContainerLogs(ctx context.Context, namespace, podName, con
 	}
 
 	logs := p.downClientSet.CoreV1().Pods(namespace).GetLogs(podName, options)
-	return logs.Stream(ctx)
+	stream, err := logs.Stream(ctx)
+	if err != nil {
+		span.SetStatus(err)
+	}
+	return stream, err
 }
 
 func (p *Provider) RunInContainer(ctx context.Context, namespace, podName, containerName string, cmd []string, attach api.AttachIO) error {
+	ctx, span := trace.StartSpan(ctx, "在pod中执行命令")
+	defer span.End()
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, podName, nodeNameKey, p.config.NodeName)
+
 	defer func() {
 		if attach.Stdout() != nil {
 			attach.Stdout().Close()
@@ -282,7 +279,9 @@ func (p *Provider) RunInContainer(ctx context.Context, namespace, podName, conta
 
 	exec, err := remotecommand.NewSPDYExecutor(p.downConfig, "POST", req.URL())
 	if err != nil {
-		return fmt.Errorf("could not make remote command: %v", err)
+		err := fmt.Errorf("could not make remote command: %v", err)
+		span.SetStatus(err)
+		return err
 	}
 
 	ts := &termSize{attach: attach}
@@ -295,6 +294,7 @@ func (p *Provider) RunInContainer(ctx context.Context, namespace, podName, conta
 		TerminalSizeQueue: ts,
 	})
 	if err != nil {
+		span.SetStatus(err)
 		return err
 	}
 
@@ -302,39 +302,7 @@ func (p *Provider) RunInContainer(ctx context.Context, namespace, podName, conta
 }
 
 func (p *Provider) ConfigureNode(ctx context.Context, node *v1.Node) {
-	ctx, span := trace.StartSpan(ctx, "ConfigureNode")
-	defer span.End()
-
-	nodes, err := p.downNodeLister.List(labels.Nothing())
-	if err != nil {
-		return
-	}
-
-	allocates := make([]v1.ResourceList, len(nodes))
-	capacitys := make([]v1.ResourceList, len(nodes))
-	for i, n := range nodes {
-		allocates[i] = n.Status.Allocatable
-		capacitys[i] = n.Status.Capacity
-	}
-	node.Status.Allocatable = totalResourceList(allocates)
-	node.Status.Capacity = totalResourceList(allocates)
-
-	node.Status.NodeInfo.KubeletVersion = p.config.Version
-	node.Status.Addresses = []v1.NodeAddress{{Type: v1.NodeInternalIP, Address: p.config.InternalIP}}
-	node.Status.Conditions = nodeConditions()
-	node.Status.DaemonEndpoints = v1.NodeDaemonEndpoints{
-		KubeletEndpoint: v1.DaemonEndpoint{
-			Port: p.config.DaemonPort,
-		},
-	}
-	node.Status.NodeInfo.OSImage = p.config.Version
-	node.Status.NodeInfo.KernelVersion = p.config.Version
-	node.Status.NodeInfo.OperatingSystem = "linux"
-	node.Status.NodeInfo.Architecture = "amd64"
-	node.ObjectMeta.Labels[v1.LabelArchStable] = "amd64"
-	node.ObjectMeta.Labels[v1.LabelOSStable] = "linux"
-	node.ObjectMeta.Labels["alpha.service-controller.kubernetes.io/exclude-balancer"] = "true"
-	node.ObjectMeta.Labels["node.kubernetes.io/exclude-from-external-load-balancers"] = "true"
+	p.nodeHandler.configureNode(ctx, node)
 }
 
 func (p *Provider) start(ctx context.Context) error {
@@ -345,19 +313,22 @@ func (p *Provider) start(ctx context.Context) error {
 	p.downClientSet = clientset
 	p.downConfig = c
 	p.downMetricsClientSet = metricsClientSet
-	factory := informers.NewSharedInformerFactoryWithOptions(clientset, time.Minute, informers.WithTweakListOptions(func(options *metav1.ListOptions) {
-		options.LabelSelector = getDownPodVirtualKubeletLabels()
-	}))
-	p.downPodLister = factory.Core().V1().Pods().Lister()
-	factory.Core().V1().Pods().Informer().AddEventHandler(&PodEventHandler{ctx, p})
-	factory.Start(ctx.Done())
 
 	nodeFactory := informers.NewSharedInformerFactory(clientset, time.Minute)
 	p.downNodeLister = nodeFactory.Core().V1().Nodes().Lister()
 	p.downNamespaceLister = nodeFactory.Core().V1().Namespaces().Lister()
 	p.downConfigMapLister = nodeFactory.Core().V1().ConfigMaps().Lister()
 	p.downSecretLister = nodeFactory.Core().V1().Secrets().Lister()
-	nodeFactory.Core().V1().Nodes().Informer().AddEventHandler(&NodeEventHandler{ctx, p})
+
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, time.Minute, informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+		options.LabelSelector = getDownPodVirtualKubeletLabels()
+	}))
+	p.downPodLister = factory.Core().V1().Pods().Lister()
+	p.nodeHandler = &NodeEventHandler{ctx: ctx, p: p, updateNode: make(chan struct{}), downNodeLister: p.downNodeLister, downPodLister: p.downPodLister}
+	p.podHandler = &PodEventHandler{ctx: ctx, p: p, podUpdateCh: make(chan *v1.Pod), nodeHandler: p.nodeHandler}
+	factory.Core().V1().Pods().Informer().AddEventHandler(p.podHandler)
+	factory.Start(ctx.Done())
+	nodeFactory.Core().V1().Nodes().Informer().AddEventHandler(p.nodeHandler)
 	nodeFactory.Start(ctx.Done())
 	return nil
 }
@@ -409,4 +380,14 @@ func NewProvider(ctx context.Context, cfg provider.InitConfig) (*Provider, error
 		return nil, err
 	}
 	return p, nil
+}
+
+func addAttributes(ctx context.Context, span trace.Span, attrs ...string) context.Context {
+	if len(attrs)%2 == 1 {
+		return ctx
+	}
+	for i := 0; i < len(attrs); i += 2 {
+		ctx = span.WithField(ctx, attrs[i], attrs[i+1])
+	}
+	return ctx
 }

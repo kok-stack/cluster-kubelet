@@ -141,7 +141,13 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	}))
 
 	pNode := NodeFromProvider(ctx, c.NodeName, taint, p, c.Version)
-	np := node.NewNaiveNodeProvider()
+	var np node.NodeProvider
+	nodeProvider, ok := p.(node.NodeProvider)
+	if !ok {
+		np = node.NewNaiveNodeProvider()
+	} else {
+		np = nodeProvider
+	}
 	additionalOptions := []node.NodeControllerOpt{
 		node.WithNodeStatusUpdateErrorHandler(func(ctx context.Context, err error) error {
 			if !k8serrors.IsNotFound(err) {
@@ -230,9 +236,9 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	}()
 
 	setNodeReady(pNode)
-	if err := np.UpdateStatus(ctx, pNode); err != nil {
-		return errors.Wrap(err, "error marking the node as ready")
-	}
+	//if err := np.UpdateStatus(ctx, pNode); err != nil {
+	//	return errors.Wrap(err, "error marking the node as ready")
+	//}
 	log.G(ctx).Info("Initialized")
 
 	<-ctx.Done()
