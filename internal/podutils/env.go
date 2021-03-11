@@ -495,7 +495,14 @@ func podFieldSelectorRuntimeValue(fs *corev1.ObjectFieldSelector, pod *corev1.Po
 		return pod.Spec.NodeName, nil
 	case "spec.serviceAccountName":
 		return pod.Spec.ServiceAccountName, nil
-
+		//这些值是在down集群的kubelet上设置的
+		//https://github.com/kubernetes/kubernetes/blob/55f255208a682df65f322e5d48e8e9607eb221fc/pkg/kubelet/kubelet_pods.go
+	case "status.hostIP",
+		"status.podIP",
+		"status.podIPs":
+		return "", nil
+	case "status.phase":
+		return string(pod.Status.Phase), nil
 	}
 	return fieldpath.ExtractFieldPathAsString(pod, internalFieldPath)
 }

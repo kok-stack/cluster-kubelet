@@ -2,7 +2,6 @@ package kok
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/kok-stack/cluster-kubelet/cmd/virtual-kubelet/internal/provider"
 	"github.com/kok-stack/cluster-kubelet/log"
@@ -89,8 +88,8 @@ func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 
 	trimPod(pod, p.config.NodeName)
 
-	marshal, _ := json.Marshal(pod)
-	log.G(ctx).Debugf("pod内容为:", string(marshal))
+	//marshal, _ := json.Marshal(pod)
+	//log.G(ctx).Debugf("pod内容为:", string(marshal))
 
 	_, err := p.downClientSet.CoreV1().Pods(pod.GetNamespace()).Create(ctx, pod, v12.CreateOptions{})
 	if err != nil {
@@ -99,6 +98,28 @@ func (p *Provider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	}
 	return err
 }
+
+//
+//func setPodEnvironmentVariableValue(pod *v1.Pod, config provider.InitConfig) {
+//	for idx := range pod.Spec.InitContainers {
+//		setContainerEnvironmentVariableValue(&pod.Spec.InitContainers[idx], config)
+//	}
+//	for idx := range pod.Spec.Containers {
+//		setContainerEnvironmentVariableValue(&pod.Spec.Containers[idx], config)
+//	}
+//}
+//
+//func setContainerEnvironmentVariableValue(c *v1.Container, config provider.InitConfig) {
+//	for _, envVar := range c.Env {
+//		if envVar.ValueFrom == nil || envVar.ValueFrom.FieldRef == nil || len(envVar.ValueFrom.FieldRef.FieldPath) == 0 {
+//			continue
+//		}
+//		switch envVar.ValueFrom.FieldRef.FieldPath{
+//		case "status.hostIP":
+//
+//		}
+//	}
+//}
 
 func (p *Provider) syncNamespaces(ctx context.Context, namespace string) error {
 	upNs, err := p.config.ResourceManager.GetNamespace(namespace)
